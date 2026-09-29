@@ -1,21 +1,13 @@
-# Add project specific ProGuard rules here.
-# You can control the set of applied configuration files using the
-# proguardFiles setting in build.gradle.
-#
-# For more details, see
-#   http://developer.android.com/guide/developing/tools/proguard.html
+# 插件通过类名引用以下接口与类，R8 不得重命名或裁剪，
+# 否则已编译好的插件 jar 在 DexClassLoader 中无法链接。
 
-# If your project uses WebView with JS, uncomment the following
-# and specify the fully qualified class name to the JavaScript interface
-# class:
-#-keepclassmembers class fqcn.of.javascript.interface.for.webview {
-#   public *;
-#}
+-keep interface com.java.myapplication.Plugin { *; }
+-keep interface com.java.myapplication.BackgroundPlugin { *; }
+-keep interface com.java.myapplication.SubPluginDispatcher { *; }
+-keep class com.java.myapplication.ShizukuProxy {
+    public *;
+}
 
-# Uncomment this to preserve the line number information for
-# debugging stack traces.
-#-keepattributes SourceFile,LineNumberTable
-
-# If you keep the line number information, uncomment this to
-# hide the original source file name.
-#-renamesourcefileattribute SourceFile
+# Shizuku Provider 由 manifest 引用
+-keep class rikka.shizuku.** { *; }
+-dontwarn rikka.shizuku.**

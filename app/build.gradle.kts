@@ -11,8 +11,8 @@ android {
         applicationId = "com.java.myapplication"
         minSdk = 24
         targetSdk = 35
-        versionCode = 2
-        versionName = "2.1"
+        versionCode = 3
+        versionName = "2.2"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         vectorDrawables {
@@ -22,7 +22,10 @@ android {
 
     buildTypes {
         release {
-            isMinifyEnabled = false
+            isMinifyEnabled = true
+            isShrinkResources = true
+            // 沿用 debug 签名，保证能覆盖安装 v2.0 / v2.1 的发行版
+            signingConfig = signingConfigs.getByName("debug")
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro"
@@ -39,6 +42,10 @@ android {
     packaging {
         resources {
             excludes += "/META-INF/{AL2.0,LGPL2.1}"
+            excludes += "/META-INF/*.version"
+            excludes += "/META-INF/*.kotlin_module"
+            excludes += "/DebugProbesKt.bin"
+            excludes += "/kotlin-tooling-metadata.json"
         }
     }
 }
@@ -69,7 +76,7 @@ dependencies {
     androidTestImplementation(libs.androidx.ui.test.junit4)
     debugImplementation(libs.androidx.ui.tooling)
     debugImplementation(libs.androidx.ui.test.manifest)
-    
+
     // Shizuku dependencies
     implementation("dev.rikka.shizuku:api:13.1.5")
     implementation("dev.rikka.shizuku:provider:13.1.5")

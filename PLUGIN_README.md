@@ -101,12 +101,21 @@ public class MyPlugin implements Plugin {
    javac -cp host-app.jar MyPlugin.java
    ```
 
-3. **打包为 .jar**（必须包含 `META-INF/plugin.properties`）
+3. **转成 dex 并打包为 .jar**（必须包含 `classes.dex` 与 `META-INF/plugin.properties`）
    ```bash
-   jar cf MyPlugin.jar com/plugin/MyPlugin.class META-INF/plugin.properties
+   # javac 产物是 JVM 字节码，必须用 d8 转成 dex，否则框架加载不了
+   java -cp "$ANDROID_HOME/build-tools/<版本>/lib/d8.jar" \
+        com.android.tools.r8.D8 --min-api 24 --output dexout MyPlugin.class
+
+   mkdir -p pkg/META-INF
+   echo "mainClass=com.plugin.MyPlugin" > pkg/META-INF/plugin.properties
+   cp dexout/classes.dex pkg/classes.dex
+   ( cd pkg && jar cf ../MyPlugin.jar classes.dex META-INF/plugin.properties )
    ```
 
-> 插件必须是 `.jar` 且包含 `META-INF/plugin.properties`。框架不再支持 `.dex`，也不再做类名猜测——`mainClass` 必须显式声明。
+> 插件必须是 `.jar`，内含 `classes.dex` 与 `META-INF/plugin.properties`。框架用 `DexClassLoader` 加载，
+> 只有 `.class` 的 jar 会报 `Failed to open dex files ... Entry not found`。
+> 框架不支持 `.dex` 单文件，也不做类名猜测——`mainClass` 必须显式声明。
 
 ### 步骤 3：上传插件
 

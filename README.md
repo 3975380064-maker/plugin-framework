@@ -85,13 +85,25 @@ public class MyPlugin implements Plugin {
 
 注意 `execute` 的参数类型必须是 `Map<String, ?>`。宿主侧对应 Kotlin 的 `Map<String, Any>?`，编译后是 `Map<String, ? extends Object>`；写成 `Map<String, Object>` 会报 name clash 编译错误。
 
-打包：
+打包时有个关键点：**jar 里必须是 `classes.dex`，不能是 `.class`**。框架用 `DexClassLoader` 加载，普通 `javac` + `jar` 产出的 jar 只有 JVM 字节码，会加载失败。
 
 ```bash
-mkdir -p META-INF
-echo "mainClass=com.example.MyPlugin" > META-INF/plugin.properties
-jar cf MyPlugin.jar com/ META-INF/
+# 1) 编译
+javac -cp host-classes.jar -d build/classes com/example/MyPlugin.java
+
+# 2) 转成 dex
+d8 --min-api 24 --output build/dex $(find build/classes -name '*.class')
+
+# 3) 写入声明文件
+mkdir -p build/META-INF
+echo "mainClass=com.example.MyPlugin" > build/META-INF/plugin.properties
+
+# 4) 打包
+cp build/dex/classes.dex build/classes.dex
+(cd build && jar cf ../MyPlugin.jar classes.dex META-INF/plugin.properties)
 ```
+
+`d8` 在 Android SDK 的 `build-tools/<版本>/lib/d8.jar`，可用 `java -cp d8.jar com.android.tools.r8.D8` 调用。示例仓库提供了封装好的 `build.sh`。
 
 `META-INF/plugin.properties` 支持以下键：
 
@@ -199,10 +211,13 @@ ShizukuProxy
 插件没出现在列表里，按顺序检查：
 
 1. 文件是否为 `.jar` 且扩展名正确
-2. jar 内是否包含 `META-INF/plugin.properties`
-3. `mainClass` 是否与实际类名一致
-4. 该类是否实现了 `Plugin` 接口
-5. 编译插件时是否用了 `Map<String, ?>` 签名
+2. **jar 内是否有 `classes.dex`**（只有 `.class` 的 jar 一定加载失败）
+3. jar 内是否包含 `META-INF/plugin.properties`
+4. `mainClass` 是否与实际类名一致
+5. 该类是否实现了 `Plugin` 接口
+6. 编译插件时是否用了 `Map<String, ?>` 签名
+
+加载失败的完整堆栈可以在 logcat 里看到，典型报错是 `Failed to open dex files from <path> because: Entry not found`。
 
 命令执行返回 `Error: 未获取Shizuku权限，请先授权` 时，打开 Shizuku 应用重新授权。
 

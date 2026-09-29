@@ -153,14 +153,18 @@ class ShizukuProxy(private val context: Context) {
             val stderrFuture = CompletableFuture.supplyAsync {
                 process.errorStream.bufferedReader().use { it.readText() }
             }
-            val stdout = stdoutFuture.get()
-            val stderr = stderrFuture.get()
+            val stdout = stdoutFuture.get().trim()
+            val stderr = stderrFuture.get().trim()
             val exitCode = process.waitFor()
 
-            val result = if (stderr.isNotBlank()) {
-                "Output:\n${stdout.trim()}\nError:\n${stderr.trim()}\nExitCode: $exitCode"
-            } else {
-                stdout.trim()
+            // rish 把命令输出写到 stderr、stdout 为空，因此不能按 stderr 是否为空判定失败，
+            // 只能依据退出码。
+            val result = when {
+                exitCode == 0 -> stdout.ifBlank { stderr }
+                stdout.isBlank() && stderr.isBlank() -> "ExitCode: $exitCode"
+                stdout.isBlank() -> "Error:\n$stderr\nExitCode: $exitCode"
+                stderr.isBlank() -> "$stdout\nExitCode: $exitCode"
+                else -> "Output:\n$stdout\nError:\n$stderr\nExitCode: $exitCode"
             }
             android.util.Log.v(tag, "execCommand 完成, exitCode=$exitCode, 返回长度=${result.length}")
             result
