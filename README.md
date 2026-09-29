@@ -1,58 +1,46 @@
-# Plugin Framework — 基于 Shizuku 的 Android 通用插件框架
+# plugin-framework
 
-通过上传 `.jar` 插件包来扩展 Android 系统功能，插件通过 **Shizuku** 获得 ADB 级别权限，无需 Root。
+基于 Shizuku 的 Android 插件框架。导入 `.jar` 插件包即可扩展功能，插件通过 Shizuku 获得 ADB 级权限，无需 Root。
 
----
+## 特性
 
-## 🚀 核心特性
+- 热加载：选择 `.jar` 文件即可安装，无需重启应用
+- ADB 级权限：通过 Shizuku + rish 执行高权限 shell 命令
+- 后台常驻：`BackgroundPlugin` 接口支持长期运行任务，可调度子插件
+- 实例池：并发调用时创建临时实例，空闲后回收
+- ClassLoader 隔离：每个插件独立 ClassLoader，同名类不冲突
+- 命令注入防护：所有 shell 调用入口做参数白名单校验
 
-- **热加载插件** — 选择 jar 文件即可安装，无需重启应用
-- **ADB 级权限** — 通过 Shizuku + rish 执行高权限 Shell 命令
-- **后台常驻** — `BackgroundPlugin` 接口支持长期运行任务，配合子插件调度实现自动化
-- **实例池** — 并发调用时自动创建临时实例，空闲后自动回收，Mutex 保护无竞态
-- **ClassLoader 隔离** — 每个插件独立 ClassLoader，同名类不冲突
-- **安全防护** — 所有 Shell 调用入口加参数格式校验，防命令注入
+## 安装
 
----
-
-## 📦 安装
-
-1. 安装 [Shizuku](https://github.com/RikkaApps/Shizuku) 并启动
-2. 下载本应用 [APK](https://github.com/3975380064-maker/plugin-framework/releases/latest)
+1. 安装并启动 [Shizuku](https://github.com/RikkaApps/Shizuku)
+2. 下载本应用的 [APK](https://github.com/3975380064-maker/plugin-framework/releases/latest)
 3. 在 Shizuku 中授权本应用
-4. 通过应用内 `+` 按钮导入插件 jar 包
+4. 通过应用内 `+` 按钮导入插件 `.jar`
 
----
-
-## 🏗️ 架构
+## 架构
 
 ```
-┌──────────────────────────────────────────────────────────┐
-│  PluginListScreen (Compose UI)                            │
-│  ├─ [手动执行] Tab  ── 列出所有插件，点击执行               │
-│  └─ [长期运行] Tab  ── 列出 BackgroundPlugin，启动/停止     │
-├──────────────────────────────────────────────────────────┤
-│  PluginManager                                            │
-│  ├─ 安装 / 卸载 / 执行插件                                  │
-│  ├─ 实例池 (Clone Pool) ── 并发保护, 最多 5 个临时实例       │
-│  ├─ SubPluginDispatcher ── 子插件调用, Mutex 排队           │
-│  └─ BackgroundPlugin 生命周期管理                           │
-├──────────────────────────────────────────────────────────┤
-│  PluginLoader                                             │
-│  ├─ DexClassLoader 动态加载                                 │
-│  ├─ plugin.properties 解析 → PluginMeta                    │
-│  └─ ClassLoader 隔离 (parent = Plugin.class.classLoader)    │
-├──────────────────────────────────────────────────────────┤
-│  ShizukuProxy                                             │
-│  ├─ rish 懒加载初始化                                       │
-│  ├─ execCommand (并发读取 stdout/stderr, 死锁保护)           │
-│  └─ 6 个 wrapper 方法加参数校验                              │
-└──────────────────────────────────────────────────────────┘
+PluginListScreen (Compose UI)
+├─ 手动执行 Tab   列出所有插件，点击执行
+└─ 长期运行 Tab   列出 BackgroundPlugin，启动 / 停止
+
+PluginManager（对外入口，负责编排）
+├─ PluginLoader          扫描目录、解析 plugin.properties、DexClassLoader 加载
+├─ PluginInstaller       插件文件的安装与卸载
+├─ PluginInstancePool    并发实例池，空闲实例超时回收
+├─ SubPluginDispatcherImpl  子插件调用，同一 ID 串行
+└─ BackgroundPluginHost  后台常驻插件生命周期
+
+ShizukuProxy
+├─ rish 懒加载初始化
+├─ execCommand   并发读取 stdout / stderr，避免管道阻塞
+└─ 参数白名单校验后执行 pm / am / settings / getprop
 ```
 
----
+依赖方向单向：UI → PluginManager → 各子系统 → ShizukuProxy。
 
-## 📊 版本兼容
+## 版本兼容
 
 | 组件 | 版本 |
 |------|------|
@@ -63,42 +51,33 @@
 | Compose BOM | 2026.01.01 |
 | Shizuku API | 13.1.5 |
 
----
-
-## 📝 日志调试
-
-```bash
-logcat -s ShizukuProxy:V PluginLoader:V PluginManager:V
-```
-
----
-
-## 🛠️ 构建
+## 构建
 
 ```bash
 chmod +x ./setup_android_env.sh
 ./setup_android_env.sh        # ARM64 aapt2 + Gradle 环境
-./gradlew assembleDebug       # 构建 Debug APK
+./gradlew assembleDebug
 ```
 
----
+## 插件开发
 
-## 🧩 插件开发
+插件是一个实现 `Plugin` 接口的 Java/Kotlin 类，打包为 `.jar`（必须包含 `META-INF/plugin.properties` 声明 `mainClass`）后导入框架即可运行。支持手动执行、后台常驻、子插件调度三种模式。
 
-插件是一个实现 `Plugin` 接口的 Java/Kotlin 类，打包为 jar 后导入框架即可运行。支持手动执行、后台常驻、子插件调度等模式。
+完整教程与示例代码见 [plugin-framework-examples](https://github.com/3975380064-maker/plugin-framework-examples)。
 
-> **完整教程和示例代码**：[plugin-framework-examples](https://github.com/3975380064-maker/plugin-framework-examples)
+## 已知限制
 
----
+- 仅支持 ARM64：rish 二进制为 ARM64 编译
+- 仅支持 `.jar`：`.dex` 无法携带 `META-INF/plugin.properties`，因此不支持
+- 插件无法使用 Android 资源系统（R.layout、R.string 等）
+- 插件可执行任意代码且持有本应用与 Shizuku 权限，只应加载可信来源的插件
 
-## ⚠️ 已知限制
+## 日志调试
 
-- 仅支持 ARM64（rish 二进制为 ARM64 编译）
-- 插件无法使用 Android 资源系统（R.layout 等）
-- 插件必须包含 `META-INF/plugin.properties` 声明 `mainClass`
+```bash
+logcat -s ShizukuProxy:V PluginLoader:V PluginManager:V BackgroundPluginHost:V
+```
 
----
-
-## 📄 License
+## License
 
 Apache License 2.0

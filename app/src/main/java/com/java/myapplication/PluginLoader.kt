@@ -8,25 +8,25 @@ import java.util.jar.JarFile
 
 /**
  * 插件加载器
- * 负责动态加载.jar文件中的插件
+ * 负责动态加载 .jar 文件中的插件
  * 强制要求 META-INF/plugin.properties 声明 mainClass
  */
 class PluginLoader(private val context: Context) {
-    
+
     companion object {
-        private const val PLUGIN_DIR = "plugins"
-        private val PLUGIN_EXTENSIONS = arrayOf(".jar", ".dex")
+        const val PLUGIN_DIR = "plugins"
+        const val PLUGIN_EXTENSION = ".jar"
     }
-    
+
     // 已加载的插件（线程安全）
     private val loadedPlugins = ConcurrentHashMap<String, Plugin>()
-    
+
     // 插件名 → 源文件名 映射（线程安全），用于卸载时定位文件
     private val pluginSourceFiles = ConcurrentHashMap<String, String>()
-    
+
     // 插件元数据缓存：插件名 → PluginMeta
     private val pluginMetas = ConcurrentHashMap<String, PluginMeta>()
-    
+
     /**
      * 获取插件目录
      * 使用内部存储避免权限问题
@@ -38,7 +38,7 @@ class PluginLoader(private val context: Context) {
         }
         return dir
     }
-    
+
     /**
      * 扫描并加载所有插件
      */
@@ -46,16 +46,16 @@ class PluginLoader(private val context: Context) {
         android.util.Log.d("PluginLoader", "开始扫描插件目录...")
         val pluginDir = getPluginDir()
         val pluginFiles = pluginDir.listFiles { _, name ->
-            PLUGIN_EXTENSIONS.any { name.endsWith(it, ignoreCase = true) }
+            name.endsWith(PLUGIN_EXTENSION, ignoreCase = true)
         }
-        
+
         if (pluginFiles == null || pluginFiles.isEmpty()) {
-            android.util.Log.w("PluginLoader", "插件目录中没有找到.jar或.dex文件")
+            android.util.Log.w("PluginLoader", "插件目录中没有找到${PLUGIN_EXTENSION}文件")
             return emptyList()
         }
-        
+
         android.util.Log.i("PluginLoader", "找到 ${pluginFiles.size} 个插件文件")
-        
+
         pluginFiles.forEach { file ->
             android.util.Log.d("PluginLoader", "尝试加载插件: ${file.name}")
             try {
@@ -81,11 +81,11 @@ class PluginLoader(private val context: Context) {
                 android.util.Log.e("PluginLoader", "加载插件 ${file.name} 时发生异常", e)
             }
         }
-        
+
         android.util.Log.i("PluginLoader", "插件加载完成，共加载 ${loadedPlugins.size} 个插件")
         return loadedPlugins.values.toList()
     }
-    
+
     /**
      * 加载单个插件文件
      * 强制要求 META-INF/plugin.properties 声明 mainClass，不再猜类名
@@ -118,13 +118,13 @@ class PluginLoader(private val context: Context) {
             null
         }
     }
-    
+
     /**
      * 统一解析 META-INF/plugin.properties
      * 支持：mainClass, uid, version, description, subPlugins
      */
     private fun readPluginProperties(file: File): Map<String, String> {
-        if (!file.name.endsWith(".jar", ignoreCase = true)) return emptyMap()
+        if (!file.name.endsWith(PLUGIN_EXTENSION, ignoreCase = true)) return emptyMap()
         return try {
             JarFile(file).use { jar ->
                 val entry = jar.getJarEntry("META-INF/plugin.properties") ?: return emptyMap()
@@ -148,21 +148,21 @@ class PluginLoader(private val context: Context) {
             emptyMap()
         }
     }
-    
+
     /**
      * 获取所有已加载的插件
      */
     fun getLoadedPlugins(): List<Plugin> {
         return loadedPlugins.values.toList()
     }
-    
+
     /**
      * 获取指定名称的插件
      */
     fun getPlugin(name: String): Plugin? {
         return loadedPlugins[name]
     }
-    
+
     /**
      * 卸载插件
      */
@@ -171,7 +171,7 @@ class PluginLoader(private val context: Context) {
         pluginSourceFiles.remove(name)
         return loadedPlugins.remove(name) != null
     }
-    
+
     /**
      * 重新加载插件
      */
@@ -181,14 +181,14 @@ class PluginLoader(private val context: Context) {
         pluginMetas.clear()
         return loadAllPlugins()
     }
-    
+
     /**
      * 获取插件对应的源文件名
      */
     fun getPluginSourceFile(name: String): String? {
         return pluginSourceFiles[name]
     }
-    
+
     /**
      * 获取插件元数据
      */

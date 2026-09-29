@@ -18,8 +18,10 @@ import androidx.compose.ui.unit.dp
 import com.java.myapplication.Plugin
 import com.java.myapplication.BackgroundPlugin
 import com.java.myapplication.PluginManager
+import com.java.myapplication.PluginUriResolver
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -38,7 +40,6 @@ fun PluginListScreen() {
     var showDeleteConfirm by remember { mutableStateOf(value = null as String?) }
     var pinnedPlugins by remember { mutableStateOf<Set<String>>(emptySet()) }
     var runningBgPlugins by remember { mutableStateOf<Set<String>>(emptySet()) }
-    var cloneCounts by remember { mutableStateOf<Map<String, Int>>(emptyMap()) }
 
     val pluginManager = remember {
         PluginManager(context).apply {
@@ -55,17 +56,25 @@ fun PluginListScreen() {
         }
     }
 
+    DisposableEffect(Unit) {
+        onDispose { pluginManager.destroy() }
+    }
+
     LaunchedEffect(Unit) {
-        pluginManager.initialize()
-        plugins = pluginManager.getLoadedPlugins()
+        plugins = withContext(Dispatchers.IO) {
+            pluginManager.initialize()
+            pluginManager.getLoadedPlugins()
+        }
         isLoading = false
     }
 
     fun refreshPlugins() {
-        isLoading = true
-        errorMessage = null
-        plugins = pluginManager.reloadPlugins()
-        isLoading = false
+        scope.launch {
+            isLoading = true
+            errorMessage = null
+            plugins = withContext(Dispatchers.IO) { pluginManager.reloadPlugins() }
+            isLoading = false
+        }
     }
 
     fun sortedPlugins(): List<Plugin> {
@@ -162,13 +171,6 @@ fun PluginListScreen() {
                                         TextButton(onClick = { togglePin(name) }) {
                                             Text(if (isPinned) "取消置顶" else "置顶", style = MaterialTheme.typography.labelSmall)
                                         }
-                                        // 虚拟插件数量角标
-                                        val count = cloneCounts[name] ?: 0
-                                        if (count > 0) {
-                                            Surface(shape = MaterialTheme.shapes.small, color = MaterialTheme.colorScheme.secondaryContainer) {
-                                                Text("+${count}", modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp), style = MaterialTheme.typography.labelSmall)
-                                            }
-                                        }
                                     }
                                     Spacer(Modifier.height(4.dp))
                                     Text(plugin.getDescription(), style = MaterialTheme.typography.bodyMedium)
@@ -186,8 +188,10 @@ fun PluginListScreen() {
                                                     executingPlugin = name
                                                     scope.launch(Dispatchers.IO) {
                                                         val result = pluginManager.executePlugin(name)
-                                                        executingPlugin = null
-                                                        showExecutionResult(name, result)
+                                                        withContext(Dispatchers.Main) {
+                                                            executingPlugin = null
+                                                            showExecutionResult(name, result)
+                                                        }
                                                     }
                                                 }
                                             }, enabled = !isExecuting) {
@@ -242,12 +246,15 @@ fun PluginListScreen() {
                 showAddDialog = false
                 isLoading = true
                 errorMessage = null
-                val ok = pluginManager.installPluginFromUri(uri)
-                if (ok) {
-                    pluginManager.reloadPlugins()
-                    refreshPlugins()
-                } else {
-                    errorMessage = "安装失败"
+                scope.launch {
+                    val ok = withContext(Dispatchers.IO) { pluginManager.installPluginFromUri(uri) }
+                    if (ok) {
+                        // installPluginFromUri 内部已重载插件，这里只取最新列表
+                        plugins = withContext(Dispatchers.IO) { pluginManager.getLoadedPlugins() }
+                    } else {
+                        errorMessage = "安装失败"
+                    }
+                    isLoading = false
                 }
             }
         )
@@ -261,9 +268,11 @@ fun PluginListScreen() {
             text = { Text("此操作不可撤销") },
             confirmButton = {
                 TextButton(onClick = {
-                    pluginManager.uninstallPlugin(delName)
-                    plugins = plugins.filter { it.getName() != delName }
                     showDeleteConfirm = null
+                    scope.launch {
+                        withContext(Dispatchers.IO) { pluginManager.uninstallPlugin(delName) }
+                        plugins = plugins.filter { it.getName() != delName }
+                    }
                 }) { Text("确定删除") }
             },
             dismissButton = {
@@ -282,48 +291,30 @@ fun AddPluginDialog(
     var selectedUri by remember { mutableStateOf<Uri?>(null) }
     var selectedFileName by remember { mutableStateOf<String?>(null) }
     val context = LocalContext.current
-    
+
     // 文件选择器必须在顶层定义，不能在 lambda 内部
     val filePickerLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.OpenDocument()
     ) { uri: Uri? ->
         if (uri != null) {
             selectedUri = uri
-            // 获取文件名
-            try {
-                val cursor = context.contentResolver.query(
-                    uri,
-                    arrayOf(android.provider.OpenableColumns.DISPLAY_NAME),
-                    null, null, null
-                )
-                cursor?.use { c ->
-                    if (c.moveToFirst()) {
-                        val nameIndex = c.getColumnIndex(android.provider.OpenableColumns.DISPLAY_NAME)
-                        if (nameIndex >= 0) {
-                            selectedFileName = c.getString(nameIndex)
-                        }
-                    }
-                }
-            } catch (e: Exception) {
-                android.util.Log.e("AddPluginDialog", "获取文件名失败", e)
-            }
-            if (selectedFileName == null) {
-                selectedFileName = uri.lastPathSegment ?: "未知文件"
-            }
+            selectedFileName = PluginUriResolver.displayName(context, uri)
+                ?: uri.lastPathSegment
+                ?: "未知文件"
             Toast.makeText(context, "已选择文件: $selectedFileName", Toast.LENGTH_SHORT).show()
         } else {
             Toast.makeText(context, "未选择文件", Toast.LENGTH_SHORT).show()
         }
     }
-    
+
     AlertDialog(
         onDismissRequest = onDismiss,
         title = { Text("添加插件") },
         text = {
             Column {
-                Text("请选择.jar或.dex格式的插件文件：")
+                Text("请选择.jar格式的插件文件：")
                 Spacer(modifier = Modifier.height(16.dp))
-                
+
                 // 文件选择按钮
                 Button(
                     onClick = {
@@ -334,7 +325,7 @@ fun AddPluginDialog(
                 ) {
                     Text("选择文件")
                 }
-                
+
                 // 显示已选择的文件
                 if (selectedUri != null) {
                     Spacer(modifier = Modifier.height(12.dp))

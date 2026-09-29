@@ -145,8 +145,8 @@
 
 ### 实例池 (Plugin Pool)
 
-- 用 `Mutex` 保护的并发安全池，最多 5 个 clone
-- 池满时轮询等待（100ms 间隔）
+- `PluginInstancePool` 管理，`Mutex` 保护的临界区一律不等待
+- 池满时释放锁后按 50ms 间隔重试（旧实现在锁内轮询，与归还方互锁）
 - 空闲 clone 30 秒后被自动回收
 - 多次引用同一插件时自动创建临时实例，用完释放
 
@@ -211,7 +211,7 @@ subPlugins=monitor,kill,skip     # 逗号分隔的子插件 ID 列表
 - 插件被常驻调用时会自动创建临时实例（最多 5 个 clone），30 秒空闲后自动回收
 
 ### 并发安全
-- 实例池用 `Mutex` 保护，`acquirePluginInstance`、`releasePluginInstance`、`cleanupExpiredClones` 均加锁
+- 实例池 `Mutex` 的临界区只做内存操作，等待放在锁外；`acquire`/`release`/`evictIdle` 均为挂起函数
 - 子插件调度器用 `Mutex` 排队，同一子插件同时只被一个调用方执行
 - Compose 回调全都用 `scope.launch(Dispatchers.Main)` 保证主线程安全
 
@@ -225,7 +225,12 @@ subPlugins=monitor,kill,skip     # 逗号分隔的子插件 ID 列表
 | PluginMeta.kt | 插件元数据（uid, version, subPlugins 等） | 低 |
 | ShizukuProxy.kt | 封装 Shizuku 高权限命令，rish 懒加载，参数校验 | 中 |
 | PluginLoader.kt | DexClassLoader 加载、plugin.properties 解析、ClassLoader 隔离 | 低 |
-| PluginManager.kt | 安装/卸载/执行、实例池、子插件调度、BackgroundPlugin 管理 | 中 |
+| PluginManager.kt | 对外入口，编排各子系统 | 中 |
+| PluginInstaller.kt | 插件文件的安装与卸载 | 低 |
+| PluginInstancePool.kt | 并发实例池与空闲回收 | 中 |
+| SubPluginDispatcherImpl.kt | 子插件调度，按 ID 串行 | 低 |
+| BackgroundPluginHost.kt | 后台常驻插件生命周期 | 低 |
+| PluginUriResolver.kt | URI 展示名与安全文件名解析 | 低 |
 | PluginListScreen.kt | Compose UI：Tab 切换、列表、置顶、删除确认、执行结果 | 高 |
 | MainActivity.kt | Shizuku 权限生命周期 | 低 |
 | AndroidManifest.xml | 权限、Activity、Provider 声明 | 低 |
@@ -244,7 +249,7 @@ subPlugins=monitor,kill,skip     # 逗号分隔的子插件 ID 列表
 cp app/build/outputs/apk/debug/app-debug.apk /data/local/tmp/ && pm install -r /data/local/tmp/app-debug.apk
 
 # 查看日志
-logcat -s ShizukuProxy:V PluginLoader:V PluginManager:V ClipStack:V
+logcat -s ShizukuProxy:V PluginLoader:V PluginManager:V BackgroundPluginHost:V
 
 # 手动推送插件文件
 cp MyPlugin.jar /data/local/tmp/ && run-as com.java.myapplication cp /data/local/tmp/MyPlugin.jar files/plugins/

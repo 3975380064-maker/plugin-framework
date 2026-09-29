@@ -2,7 +2,7 @@
 
 ## 🎯 框架简介
 
-这是一个基于 Shizuku 的 Android 通用插件框架，允许用户通过上传 `.jar` 或 `.dex` 文件来扩展应用功能。插件可以使用 Shizuku 获得 ADB 级别的权限，执行高权限操作。
+这是一个基于 Shizuku 的 Android 通用插件框架，允许用户通过上传 `.jar` 插件包来扩展应用功能。插件可以使用 Shizuku 获得 ADB 级别的权限，执行高权限操作。
 
 ## 📁 项目结构
 
@@ -41,7 +41,7 @@ public interface Plugin {
 - `putSetting(ns, key, value)` - 修改系统设置
 
 ### 3. PluginLoader
-负责动态加载 `.jar`/`.dex` 文件中的插件类。
+负责动态加载 `.jar` 文件中的插件类。
 
 ### 4. PluginManager
 插件生命周期管理，支持：
@@ -61,27 +61,27 @@ import com.java.myapplication.ShizukuProxy;
 import java.util.Map;
 
 public class MyPlugin implements Plugin {
-    
+
     @Override
     public String getName() {
         return "MyPlugin";
     }
-    
+
     @Override
     public String getDescription() {
         return "我的自定义插件";
     }
-    
+
     @Override
     public String getVersion() {
         return "1.0.0";
     }
-    
+
     @Override
     public boolean needsShizuku() {
         return true;  // 需要 Shizuku 权限
     }
-    
+
     @Override
     public String execute(ShizukuProxy proxy, Map<String, Object> args) {
         // 执行你的逻辑
@@ -93,8 +93,6 @@ public class MyPlugin implements Plugin {
 
 ### 步骤 2：编译插件
 
-#### 方法一：使用 d8 工具（推荐）
-
 1. **准备依赖**
    - 将宿主应用编译后的 `classes.jar` 或接口定义文件作为依赖
 
@@ -103,22 +101,16 @@ public class MyPlugin implements Plugin {
    javac -cp host-app.jar MyPlugin.java
    ```
 
-3. **转换为 .dex 文件**
+3. **打包为 .jar**（必须包含 `META-INF/plugin.properties`）
    ```bash
-   # 使用 Android SDK 的 d8 工具
-   d8 MyPlugin.class --output .
-   # 会生成 classes.dex，重命名为 MyPlugin.dex
+   jar cf MyPlugin.jar com/plugin/MyPlugin.class META-INF/plugin.properties
    ```
 
-#### 方法二：使用 Android Studio
-
-1. 创建一个 Android Library 模块
-2. 实现 Plugin 接口
-3. 编译后从 `build/intermediates/dex/release/` 获取 `.dex` 文件
+> ⚠️ 插件必须是 `.jar` 且包含 `META-INF/plugin.properties`。框架不再支持 `.dex`，也不再做类名猜测——`mainClass` 必须显式声明。
 
 ### 步骤 3：上传插件
 
-将编译好的 `.dex` 或 `.jar` 文件复制到：
+将打包好的 `.jar` 文件复制到：
 ```
 /sdcard/Android/data/com.java.myapplication/files/plugins/
 ```
@@ -156,8 +148,7 @@ public class MyPlugin implements Plugin {
 
 | 格式 | 说明 | 推荐度 |
 |------|------|--------|
-| `.dex` | Dalvik 可执行文件 | ⭐⭐⭐⭐⭐ |
-| `.jar` | Java 归档文件 | ⭐⭐⭐⭐ |
+| `.jar` | Java 归档文件，需含 `META-INF/plugin.properties` | ⭐⭐⭐⭐⭐ |
 
 ## ⚠️ 注意事项
 
@@ -197,7 +188,7 @@ public class MyPlugin implements Plugin {
 A: 请确保 Shizuku 应用已安装并正在运行。
 
 ### Q: 插件加载失败
-A: 检查插件文件是否正确实现了 Plugin 接口，包名是否正确。
+A: 检查插件是否为 `.jar`、是否实现了 Plugin 接口、`META-INF/plugin.properties` 中的 `mainClass` 是否正确。
 
 ### Q: 执行命令返回空
 A: 某些命令需要 root 权限，Shizuku 只提供 ADB 级别权限。
