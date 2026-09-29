@@ -9,10 +9,13 @@ import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 /**
  * 插件管理器：编排加载、安装卸载、执行、实例池与后台常驻插件。
- * 本身不持有 UI 状态；IO 相关方法为挂起函数，由调用方决定调度器。
+ *
+ * 本身不持有 UI 状态。所有会阻塞的方法都在内部切到 [Dispatchers.IO]，
+ * 调用方（UI）用哪个调度器都不会卡主线程 —— 插件执行会起进程、耗时数秒。
  */
 class PluginManager(context: Context) {
 
@@ -45,35 +48,37 @@ class PluginManager(context: Context) {
         }
     }
 
-    suspend fun loadPlugins(): List<Plugin> = runCatching { pluginLoader.loadAllPlugins() }
-        .getOrElse {
-            onError?.invoke("加载插件失败: ${it.message}")
-            emptyList()
-        }
-
-    /**
-     * 全部重新加载。
-     * 会重建 ClassLoader，因此先停掉后台插件并丢弃实例池，避免旧类的孤儿任务。
-     */
-    suspend fun reloadPlugins(): List<Plugin> {
-        backgroundHost.stopAll()
-        pool.discardAll()
-        return runCatching { pluginLoader.reloadPlugins() }
+    suspend fun loadPlugins(): List<Plugin> = withContext(Dispatchers.IO) {
+        runCatching { pluginLoader.loadAllPlugins() }
             .getOrElse {
                 onError?.invoke("加载插件失败: ${it.message}")
                 emptyList()
             }
     }
 
-    suspend fun executePlugin(pluginName: String): String {
+    /**
+     * 全部重新加载。
+     * 会重建 ClassLoader，因此先停掉后台插件并丢弃实例池，避免旧类的孤儿任务。
+     */
+    suspend fun reloadPlugins(): List<Plugin> = withContext(Dispatchers.IO) {
+        backgroundHost.stopAll()
+        pool.discardAll()
+        runCatching { pluginLoader.reloadPlugins() }
+            .getOrElse {
+                onError?.invoke("加载插件失败: ${it.message}")
+                emptyList()
+            }
+    }
+
+    suspend fun executePlugin(pluginName: String): String = withContext(Dispatchers.IO) {
         val plugin = pluginLoader.getPlugin(pluginName)
-            ?: return "Error: Plugin not found\n\n" +
+            ?: return@withContext "Error: Plugin not found\n\n" +
                     "插件 $pluginName 未找到。可能原因：\n" +
                     "1. 插件文件缺少 META-INF/plugin.properties\n" +
                     "2. mainClass 声明有误\n" +
                     "3. 插件未正确实现 Plugin 接口"
 
-        return try {
+        try {
             plugin.execute(shizukuProxy, null)
         } catch (e: Throwable) {
             val msg = "执行插件失败: ${e.message}\n堆栈跟踪: ${e.stackTraceToString()}"
@@ -83,16 +88,16 @@ class PluginManager(context: Context) {
     }
 
     /** 安装成功返回 null，失败返回错误信息。 */
-    suspend fun installPluginFromUri(uri: Uri): String? {
+    suspend fun installPluginFromUri(uri: Uri): String? = withContext(Dispatchers.IO) {
         val error = installer.install(uri)
-        if (error == null) loadPlugins()
-        return error
+        if (error == null) pluginLoader.loadAllPlugins()
+        error
     }
 
     /** 卸载成功返回 null，失败返回错误信息。 */
-    suspend fun uninstallPlugin(pluginName: String): String? {
+    suspend fun uninstallPlugin(pluginName: String): String? = withContext(Dispatchers.IO) {
         backgroundHost.stop(pluginName)
-        return try {
+        try {
             val error = installer.uninstall(pluginName)
             if (error == null) pool.discard(pluginName)
             error
