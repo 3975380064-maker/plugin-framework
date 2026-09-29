@@ -382,6 +382,9 @@ android.nonTransitiveRClass=true
 # Proot/Termux Compatibility Settings
 # Disable AAPT2 daemon mode to prevent "Daemon startup failed" errors in proot environment
 android.aapt2.process.daemon=false
+# AGP 9 资源优化在 proot/ARM64 下会产出缺少
+# AndroidManifest.xml 与 res/ 的 APK，关闭。
+android.enableResourceOptimizations=false
 EOF
 }
 

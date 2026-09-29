@@ -2,14 +2,14 @@
 
 基于 Shizuku 的 Android 插件框架。把 `.jar` 插件包导入应用即可扩展功能，插件通过 Shizuku 获得 ADB 级权限，无需 Root。
 
-- 当前版本：v2.1
+- 当前版本：v2.3
 - 插件开发示例与教程：[plugin-framework-examples](https://github.com/3975380064-maker/plugin-framework-examples)
 
 ## 特性
 
 - 热加载：选择 `.jar` 文件即可安装，无需重启应用
 - ADB 级权限：通过 Shizuku + rish 执行高权限 shell 命令
-- 后台常驻：`BackgroundPlugin` 接口支持长期运行任务，并可调度子插件
+- 后台常驻：`BackgroundPlugin` 接口支持长期运行任务，并可调度子插件；运行期间由前台服务保活
 - 实例池：并发调用同一插件时创建临时实例，空闲 30 秒后回收
 - ClassLoader 隔离：每个插件独立 ClassLoader，同名类不冲突
 - 命令注入防护：`ShizukuProxy` 的所有 shell 入口都做参数白名单校验
@@ -27,8 +27,8 @@
 
 界面分两个 Tab：
 
-- **手动执行**：列出全部已加载插件，点“执行”运行一次，结果以弹窗展示
-- **长期运行**：列出实现了 `BackgroundPlugin` 的插件，可启动 / 停止
+- **一次性任务**：列出未实现 `BackgroundPlugin` 的插件，点“执行”运行一次，结果以弹窗展示
+- **长期任务**：列出实现了 `BackgroundPlugin` 的插件，可启动 / 停止；启动后由前台服务保活
 
 支持置顶常用插件、卸载插件。
 
@@ -41,6 +41,14 @@ chmod +x ./setup_android_env.sh
 ```
 
 产物：`app/build/outputs/apk/debug/app-debug.apk`
+
+发布用 release 变体（体积约为 debug 的 1/5）：
+
+```bash
+./gradlew assembleRelease   # app/build/outputs/apk/release/app-release.apk
+```
+
+**改 `proguard-rules.pro` 前注意**：本应用是插件宿主，R8 会删掉宿主自己用不到、而插件可能正引用的符号。当前已 keep 插件接口与 `ShizukuProxy`、`kotlin.**`、`kotlinx.coroutines.**`、`kotlin.coroutines.**`。少任何一条，Kotlin 插件都会在 release 版运行时抛 `NoClassDefFoundError`（例如 suspend 函数依赖的 `kotlin.ResultKt`），而在 debug 版一切正常。
 
 | 组件 | 版本 |
 |------|------|
@@ -156,6 +164,8 @@ interface SubPluginDispatcher {
 ```
 
 常驻插件通过它在 `plugin.properties` 声明的 `subPlugins` 中调用子插件，同一子插件 ID 串行执行。
+`call` 的 `args` 会按 `{"subPluginId": id}` 与其合并后传给被调度插件的 `execute`。
+子插件 ID 由声明它的插件自己响应；界面上「手动执行」不传参（`args` 为 `null`）。
 
 ### ShizukuProxy
 
@@ -177,24 +187,28 @@ interface SubPluginDispatcher {
 
 ```
 PluginListScreen (Compose UI)
-├─ 手动执行 Tab
-└─ 长期运行 Tab
+├─ 一次性任务 Tab   未实现 BackgroundPlugin 的插件
+└─ 长期任务 Tab     实现了 BackgroundPlugin 的插件
 
-PluginManager            对外入口，负责编排
-├─ PluginLoader          扫描目录、解析 plugin.properties、DexClassLoader 加载
-├─ PluginInstaller       插件文件的安装与卸载
-├─ PluginInstancePool    并发实例池，空闲实例超时回收
-├─ SubPluginDispatcherImpl  子插件调用，同一 ID 串行
-├─ BackgroundPluginHost  后台常驻插件生命周期
-└─ PluginUriResolver     URI 展示名与安全文件名解析
+PluginFrameworkApp        进程入口，建立应用级 PluginHost
+PluginHost                持有状态(StateFlow)，不随 Activity 重建销毁
+└─ PluginHostService      有长期任务时启动的前台保活服务
+
+PluginManager             编排：加载 / 安装 / 卸载 / 执行
+├─ PluginLoader           扫描目录、解析 plugin.properties、DexClassLoader 加载
+├─ PluginInstaller        插件文件的安装与卸载
+├─ PluginInstancePool     并发实例池，池满等待超时后报错
+├─ SubPluginDispatcherImpl 子插件调用，同 ID 串行且可重入
+├─ BackgroundPluginHost   后台插件生命周期
+└─ PluginUriResolver      URI 展示名与安全文件名解析
 
 ShizukuProxy
 ├─ rish 懒加载初始化
-├─ execCommand   并发读取 stdout / stderr，避免管道阻塞
-└─ 参数白名单校验后执行 pm / am / settings / getprop
+├─ execCommand   并发读取 stdout / stderr，按退出码判定结果
+└─ ShellArgs 白名单校验后执行 pm / am / settings / getprop
 ```
 
-依赖方向单向：UI → PluginManager → 各子系统 → PluginLoader / ShizukuProxy。
+依赖方向单向：UI → PluginHost → PluginManager → 各子系统 → PluginLoader / ShizukuProxy。
 
 插件目录：`context.filesDir/plugins/`（应用内部存储，无需额外权限）。
 

@@ -7,174 +7,121 @@ import java.util.concurrent.ConcurrentHashMap
 import java.util.jar.JarFile
 
 /**
- * 插件加载器
- * 负责动态加载 .jar 文件中的插件
- * 强制要求 META-INF/plugin.properties 声明 mainClass
+ * 插件加载器。
+ * 扫描插件目录，按 META-INF/plugin.properties 的 mainClass 加载 .jar（内含 classes.dex）。
  */
 class PluginLoader(private val context: Context) {
 
     companion object {
         const val PLUGIN_DIR = "plugins"
         const val PLUGIN_EXTENSION = ".jar"
+        private const val TAG = "PluginLoader"
     }
 
-    // 已加载的插件（线程安全）
     private val loadedPlugins = ConcurrentHashMap<String, Plugin>()
-
-    // 插件名 → 源文件名 映射（线程安全），用于卸载时定位文件
     private val pluginSourceFiles = ConcurrentHashMap<String, String>()
-
-    // 插件元数据缓存：插件名 → PluginMeta
     private val pluginMetas = ConcurrentHashMap<String, PluginMeta>()
 
-    /**
-     * 获取插件目录
-     * 使用内部存储避免权限问题
-     */
-    private fun getPluginDir(): File {
-        val dir = File(context.filesDir, PLUGIN_DIR)
-        if (!dir.exists()) {
-            dir.mkdirs()
-        }
-        return dir
-    }
+    private fun getPluginDir(): File = File(context.filesDir, PLUGIN_DIR).apply { mkdirs() }
 
-    /**
-     * 扫描并加载所有插件
-     */
+    /** 扫描并加载插件目录中的全部插件。 */
     fun loadAllPlugins(): List<Plugin> {
-        android.util.Log.d("PluginLoader", "开始扫描插件目录...")
-        val pluginDir = getPluginDir()
-        val pluginFiles = pluginDir.listFiles { _, name ->
+        val pluginFiles = getPluginDir().listFiles { _, name ->
             name.endsWith(PLUGIN_EXTENSION, ignoreCase = true)
         }
-
-        if (pluginFiles == null || pluginFiles.isEmpty()) {
-            android.util.Log.w("PluginLoader", "插件目录中没有找到${PLUGIN_EXTENSION}文件")
+        if (pluginFiles.isNullOrEmpty()) {
+            android.util.Log.w(TAG, "插件目录中没有找到 $PLUGIN_EXTENSION 文件")
             return emptyList()
         }
 
-        android.util.Log.i("PluginLoader", "找到 ${pluginFiles.size} 个插件文件")
-
         pluginFiles.forEach { file ->
-            android.util.Log.d("PluginLoader", "尝试加载插件: ${file.name}")
             try {
-                val props = readPluginProperties(file)
-                val plugin = loadPlugin(file, props)
-                if (plugin != null) {
-                    val name = plugin.getName()
-                    loadedPlugins[name] = plugin
-                    pluginSourceFiles[name] = file.name
-                    // 构建并缓存元数据
-                    pluginMetas[name] = PluginMeta(
-                        mainClass = props["mainClass"]?.trim() ?: "",
-                        uid = props["uid"]?.trim() ?: "",
-                        version = props["version"]?.trim() ?: plugin.getVersion(),
-                        description = props["description"]?.trim() ?: plugin.getDescription(),
-                        subPlugins = props["subPlugins"]?.split(",")?.map { it.trim() }?.filter { it.isNotEmpty() } ?: emptyList()
-                    )
-                    android.util.Log.i("PluginLoader", "成功加载插件: $name (文件: ${file.name})")
-                } else {
-                    android.util.Log.w("PluginLoader", "插件加载失败: ${file.name}")
+                val plugin = loadPlugin(file, readPluginProperties(file))
+                if (plugin == null) {
+                    android.util.Log.w(TAG, "插件加载失败: ${file.name}")
+                    return@forEach
                 }
-            } catch (e: Exception) {
-                android.util.Log.e("PluginLoader", "加载插件 ${file.name} 时发生异常", e)
+                val name = plugin.getName()
+                val props = readPluginProperties(file)
+                loadedPlugins[name] = plugin
+                pluginSourceFiles[name] = file.name
+                pluginMetas[name] = buildMeta(props, plugin)
+                android.util.Log.i(TAG, "成功加载插件: $name (文件: ${file.name})")
+            } catch (e: Throwable) {
+                android.util.Log.e(TAG, "加载插件 ${file.name} 时发生异常", e)
             }
         }
-
-        android.util.Log.i("PluginLoader", "插件加载完成，共加载 ${loadedPlugins.size} 个插件")
+        android.util.Log.i(TAG, "插件加载完成，共加载 ${loadedPlugins.size} 个插件")
         return loadedPlugins.values.toList()
     }
 
+    private fun buildMeta(props: Map<String, String>, plugin: Plugin) = PluginMeta(
+        mainClass = props["mainClass"]?.trim().orEmpty(),
+        uid = props["uid"]?.trim().orEmpty(),
+        version = props["version"]?.trim() ?: plugin.getVersion(),
+        description = props["description"]?.trim() ?: plugin.getDescription(),
+        subPlugins = PluginProperties.parseSubPlugins(props["subPlugins"])
+    )
+
     /**
-     * 加载单个插件文件
-     * 强制要求 META-INF/plugin.properties 声明 mainClass，不再猜类名
+     * 加载单个插件文件。
+     * 插件类必须 public 且有无参构造函数（这里用 getDeclaredConstructor().newInstance()）。
      */
     private fun loadPlugin(file: File, props: Map<String, String>): Plugin? {
         val mainClass = props["mainClass"]?.trim()
         if (mainClass.isNullOrBlank()) {
-            android.util.Log.w("PluginLoader", "插件 ${file.name} 缺少 META-INF/plugin.properties 中的 mainClass 声明，跳过")
+            android.util.Log.w(TAG, "插件 ${file.name} 缺少 mainClass 声明，跳过")
             return null
         }
         return try {
-            val optimizedDir = File(context.cacheDir, "optimized_plugins/${file.nameWithoutExtension}_${System.currentTimeMillis()}")
-            optimizedDir.mkdirs()
+            val optimizedDir = File(
+                context.cacheDir,
+                "optimized_plugins/${file.nameWithoutExtension}_${System.currentTimeMillis()}"
+            ).apply { mkdirs() }
+
             val classLoader = DexClassLoader(
                 file.absolutePath,
                 optimizedDir.absolutePath,
                 null,
                 Plugin::class.java.classLoader
             )
-            val clazz = classLoader.loadClass(mainClass)
-            val instance = clazz.getDeclaredConstructor().newInstance()
-            if (instance is Plugin) {
-                instance
-            } else {
-                android.util.Log.w("PluginLoader", "类 $mainClass 未实现 Plugin 接口")
-                null
+            val instance = classLoader.loadClass(mainClass)
+                .getDeclaredConstructor()
+                .newInstance()
+
+            val plugin = instance as? Plugin
+            if (plugin == null) {
+                android.util.Log.w(TAG, "类 $mainClass 未实现 Plugin 接口")
             }
-        } catch (e: Exception) {
-            android.util.Log.e("PluginLoader", "加载插件异常: ${file.name}", e)
+            plugin
+        } catch (e: Throwable) {
+            android.util.Log.e(TAG, "加载插件异常: ${file.name}", e)
             null
         }
     }
 
-    /**
-     * 统一解析 META-INF/plugin.properties
-     * 支持：mainClass, uid, version, description, subPlugins
-     */
     private fun readPluginProperties(file: File): Map<String, String> {
         if (!file.name.endsWith(PLUGIN_EXTENSION, ignoreCase = true)) return emptyMap()
         return try {
             JarFile(file).use { jar ->
-                val entry = jar.getJarEntry("META-INF/plugin.properties") ?: return emptyMap()
-                val result = mutableMapOf<String, String>()
-                jar.getInputStream(entry).bufferedReader().use { reader ->
-                    reader.lines().forEach { line ->
-                        val trimmed = line.trim()
-                        val eq = trimmed.indexOf('=')
-                        if (eq > 0) {
-                            val key = trimmed.substring(0, eq).trim()
-                            val value = trimmed.substring(eq + 1).trim()
-                            if (key.isNotEmpty() && value.isNotEmpty()) {
-                                result[key] = value
-                            }
-                        }
-                    }
-                }
-                return result
+                val entry = jar.getJarEntry(PluginProperties.ENTRY_NAME) ?: return emptyMap()
+                PluginProperties.parse(jar.getInputStream(entry))
             }
-        } catch (_: Exception) {
+        } catch (_: Throwable) {
             emptyMap()
         }
     }
 
-    /**
-     * 获取所有已加载的插件
-     */
-    fun getLoadedPlugins(): List<Plugin> {
-        return loadedPlugins.values.toList()
-    }
+    fun getLoadedPlugins(): List<Plugin> = loadedPlugins.values.toList()
 
-    /**
-     * 获取指定名称的插件
-     */
-    fun getPlugin(name: String): Plugin? {
-        return loadedPlugins[name]
-    }
+    fun getPlugin(name: String): Plugin? = loadedPlugins[name]
 
-    /**
-     * 卸载插件
-     */
     fun unloadPlugin(name: String): Boolean {
         pluginMetas.remove(name)
         pluginSourceFiles.remove(name)
         return loadedPlugins.remove(name) != null
     }
 
-    /**
-     * 重新加载插件
-     */
     fun reloadPlugins(): List<Plugin> {
         loadedPlugins.clear()
         pluginSourceFiles.clear()
@@ -182,17 +129,7 @@ class PluginLoader(private val context: Context) {
         return loadAllPlugins()
     }
 
-    /**
-     * 获取插件对应的源文件名
-     */
-    fun getPluginSourceFile(name: String): String? {
-        return pluginSourceFiles[name]
-    }
+    fun getPluginSourceFile(name: String): String? = pluginSourceFiles[name]
 
-    /**
-     * 获取插件元数据
-     */
-    fun getPluginMeta(name: String): PluginMeta? {
-        return pluginMetas[name]
-    }
+    fun getPluginMeta(name: String): PluginMeta? = pluginMetas[name]
 }

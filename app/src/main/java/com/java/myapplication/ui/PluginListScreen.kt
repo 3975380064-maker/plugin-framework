@@ -1,99 +1,55 @@
 package com.java.myapplication.ui
 
-import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.verticalScroll
+import android.net.Uri
+import android.widget.Toast
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
-import androidx.activity.compose.rememberLauncherForActivityResult
-import androidx.activity.result.contract.ActivityResultContracts
-import android.net.Uri
-import android.widget.Toast
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
-import com.java.myapplication.Plugin
 import com.java.myapplication.BackgroundPlugin
-import com.java.myapplication.PluginManager
+import com.java.myapplication.Plugin
+import com.java.myapplication.PluginHost
 import com.java.myapplication.PluginUriResolver
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.launch
-import kotlinx.coroutines.withContext
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun PluginListScreen() {
     val context = LocalContext.current
-    val scope = rememberCoroutineScope()
-    var plugins by remember { mutableStateOf<List<Plugin>>(emptyList()) }
-    var isLoading by remember { mutableStateOf(true) }
-    var errorMessage by remember { mutableStateOf(value = null as String?) }
+    val host = remember { PluginHost.get(context) }
+
+    val plugins by host.plugins.collectAsState()
+    val runningBackground by host.runningBackground.collectAsState()
+    val pinned by host.pinned.collectAsState()
+    val isLoading by host.loading.collectAsState()
+    val errorMessage by host.error.collectAsState()
+    val executing by host.executing.collectAsState()
+    val result by host.result.collectAsState()
+
+    var selectedTab by rememberSaveable { mutableIntStateOf(0) }   // 0=一次性任务, 1=长期任务
     var showAddDialog by remember { mutableStateOf(false) }
-    var showResultDialog by remember { mutableStateOf(false) }
-    var resultDialogText by remember { mutableStateOf("") }
-    var resultDialogTitle by remember { mutableStateOf("") }
-    var executingPlugin by remember { mutableStateOf(value = null as String?) }
-    var selectedTab by remember { mutableIntStateOf(0) }  // 0=手动, 1=长期运行
-    var showDeleteConfirm by remember { mutableStateOf(value = null as String?) }
-    var pinnedPlugins by remember { mutableStateOf<Set<String>>(emptySet()) }
-    var runningBgPlugins by remember { mutableStateOf<Set<String>>(emptySet()) }
+    var showDeleteConfirm by remember { mutableStateOf<String?>(null) }
 
-    val pluginManager = remember {
-        PluginManager(context).apply {
-            onPluginLoaded = { scope.launch(Dispatchers.Main) { plugins = (plugins + it).distinctBy { p -> p.getName() } } }
-            onPluginUnloaded = { name ->
-                scope.launch(Dispatchers.Main) {
-                    plugins = plugins.filter { p -> p.getName() != name }
-                    pinnedPlugins = pinnedPlugins - name
-                }
-            }
-            onError = { scope.launch(Dispatchers.Main) { errorMessage = it } }
-            onBackgroundPluginStarted = { scope.launch(Dispatchers.Main) { runningBgPlugins = runningBgPlugins + it } }
-            onBackgroundPluginStopped = { scope.launch(Dispatchers.Main) { runningBgPlugins = runningBgPlugins - it } }
+    // PluginHost 已在 Application 中启动；这里再调一次是幂等的，便于预览/复用
+    LaunchedEffect(Unit) { host.start() }
+
+    // 一次性任务只列非 BackgroundPlugin；长期任务单独一个 Tab
+    val displayed = remember(plugins, pinned, selectedTab) {
+        val sorted = plugins.sortedByDescending { it.getName() in pinned }
+        if (selectedTab == 0) {
+            sorted.filterNot { it is BackgroundPlugin }
+        } else {
+            sorted.filterIsInstance<BackgroundPlugin>()
         }
-    }
-
-    DisposableEffect(Unit) {
-        onDispose { pluginManager.destroy() }
-    }
-
-    LaunchedEffect(Unit) {
-        plugins = withContext(Dispatchers.IO) {
-            pluginManager.initialize()
-            pluginManager.getLoadedPlugins()
-        }
-        isLoading = false
-    }
-
-    fun refreshPlugins() {
-        scope.launch {
-            isLoading = true
-            errorMessage = null
-            plugins = withContext(Dispatchers.IO) { pluginManager.reloadPlugins() }
-            isLoading = false
-        }
-    }
-
-    fun sortedPlugins(): List<Plugin> {
-        val list = plugins.toMutableList()
-        list.sortByDescending { it.getName() in pinnedPlugins }
-        return list
-    }
-
-    fun showExecutionResult(pluginName: String, result: String) {
-        resultDialogTitle = "插件执行结果 - $pluginName"
-        resultDialogText = if (result.startsWith("Error:")) "执行失败\n\n$result" else "执行成功\n\n$result"
-        showResultDialog = true
-    }
-
-    fun togglePin(pluginName: String) {
-        pinnedPlugins = if (pluginName in pinnedPlugins)
-            pinnedPlugins - pluginName
-        else
-            pinnedPlugins + pluginName
     }
 
     Scaffold(
@@ -108,28 +64,35 @@ fun PluginListScreen() {
                 )
                 TabRow(selectedTabIndex = selectedTab) {
                     Tab(selected = selectedTab == 0, onClick = { selectedTab = 0 }) {
-                        Text("手动执行", modifier = Modifier.padding(12.dp))
+                        Text("一次性任务", modifier = Modifier.padding(12.dp))
                     }
                     Tab(selected = selectedTab == 1, onClick = { selectedTab = 1 }) {
-                        Text("长期运行", modifier = Modifier.padding(12.dp))
+                        Text("长期任务", modifier = Modifier.padding(12.dp))
                     }
                 }
             }
         },
         floatingActionButton = {
-            FloatingActionButton(onClick = { showAddDialog = true }) {
-                Text("+")
-            }
+            FloatingActionButton(onClick = { showAddDialog = true }) { Text("+") }
         }
     ) { innerPadding ->
         Column(modifier = Modifier.padding(innerPadding).fillMaxSize()) {
-            // 错误消息
             errorMessage?.let { error ->
                 Card(
                     modifier = Modifier.fillMaxWidth().padding(16.dp),
                     colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.errorContainer)
                 ) {
-                    Text(text = error, modifier = Modifier.padding(16.dp), color = MaterialTheme.colorScheme.error)
+                    Row(
+                        modifier = Modifier.padding(16.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text(
+                            text = error,
+                            modifier = Modifier.weight(1f),
+                            color = MaterialTheme.colorScheme.error
+                        )
+                        TextButton(onClick = { host.clearError() }) { Text("关闭") }
+                    }
                 }
             }
 
@@ -137,83 +100,83 @@ fun PluginListScreen() {
                 Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                     CircularProgressIndicator()
                 }
-            } else {
-                val displayPlugins = if (selectedTab == 0) sortedPlugins() else sortedPlugins().filter { it is BackgroundPlugin }
-
-                if (displayPlugins.isEmpty()) {
-                    Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                        Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                            Text(if (selectedTab == 0) "暂无插件" else "暂无长期运行插件", style = MaterialTheme.typography.headlineMedium)
-                            Spacer(Modifier.height(8.dp))
-                            Text("点击右下角 + 添加", style = MaterialTheme.typography.bodyMedium)
-                        }
+            } else if (displayed.isEmpty()) {
+                Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                        Text(
+                            if (selectedTab == 0) "暂无一次性任务插件" else "暂无长期任务插件",
+                            style = MaterialTheme.typography.headlineMedium
+                        )
+                        Spacer(Modifier.height(8.dp))
+                        Text("点击右下角 + 添加", style = MaterialTheme.typography.bodyMedium)
                     }
-                } else {
-                    LazyColumn(
-                        modifier = Modifier.fillMaxSize(),
-                        contentPadding = PaddingValues(16.dp),
-                        verticalArrangement = Arrangement.spacedBy(8.dp)
-                    ) {
-                        items(displayPlugins, key = { it.getName() }) { plugin ->
-                            val name = plugin.getName()
-                            val isRunning = name in runningBgPlugins
-                            val isPinned = name in pinnedPlugins
-                            val isExecuting = executingPlugin == name
+                }
+            } else {
+                LazyColumn(
+                    modifier = Modifier.fillMaxSize(),
+                    contentPadding = PaddingValues(16.dp),
+                    verticalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    items(displayed, key = { it.getName() }) { plugin ->
+                        val name = plugin.getName()
+                        val isPinned = name in pinned
+                        val isRunning = name in runningBackground
+                        val isExecuting = executing == name
+                        val busy = executing != null
 
-                            Card(modifier = Modifier.fillMaxWidth()) {
-                                Column(modifier = Modifier.padding(16.dp)) {
-                                    Row(verticalAlignment = Alignment.CenterVertically) {
-                                        if (isPinned) {
-                                            Text("[顶] ", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.primary)
-                                        }
-                                        Text(name, style = MaterialTheme.typography.headlineSmall, modifier = Modifier.weight(1f))
-                                        // 置顶切换按钮
-                                        TextButton(onClick = { togglePin(name) }) {
-                                            Text(if (isPinned) "取消置顶" else "置顶", style = MaterialTheme.typography.labelSmall)
-                                        }
+                        Card(modifier = Modifier.fillMaxWidth()) {
+                            Column(modifier = Modifier.padding(16.dp)) {
+                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                    if (isPinned) {
+                                        Text(
+                                            "[顶] ",
+                                            style = MaterialTheme.typography.labelSmall,
+                                            color = MaterialTheme.colorScheme.primary
+                                        )
                                     }
-                                    Spacer(Modifier.height(4.dp))
-                                    Text(plugin.getDescription(), style = MaterialTheme.typography.bodyMedium)
-                                    Text("v${plugin.getVersion()}", style = MaterialTheme.typography.bodySmall)
-                                    Spacer(Modifier.height(8.dp))
-                                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End, verticalAlignment = Alignment.CenterVertically) {
-                                        if (selectedTab == 0) {
-                                            // 手动执行模式
-                                            OutlinedButton(onClick = { showDeleteConfirm = name }, enabled = !isExecuting) {
-                                                Text("卸载")
+                                    Text(
+                                        name,
+                                        style = MaterialTheme.typography.headlineSmall,
+                                        modifier = Modifier.weight(1f)
+                                    )
+                                    TextButton(onClick = { host.togglePin(name) }) {
+                                        Text(
+                                            if (isPinned) "取消置顶" else "置顶",
+                                            style = MaterialTheme.typography.labelSmall
+                                        )
+                                    }
+                                }
+                                Text(plugin.getDescription(), style = MaterialTheme.typography.bodyMedium)
+                                Text("v${plugin.getVersion()}", style = MaterialTheme.typography.bodySmall)
+                                Spacer(Modifier.height(8.dp))
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.End,
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    OutlinedButton(
+                                        onClick = { showDeleteConfirm = name },
+                                        enabled = !isExecuting
+                                    ) { Text("卸载") }
+                                    Spacer(Modifier.width(8.dp))
+
+                                    if (selectedTab == 0) {
+                                        Button(
+                                            onClick = { host.execute(name) },
+                                            enabled = !busy
+                                        ) {
+                                            if (isExecuting) {
+                                                CircularProgressIndicator(Modifier.size(16.dp), strokeWidth = 2.dp)
+                                                Spacer(Modifier.width(4.dp))
                                             }
-                                            Spacer(Modifier.width(8.dp))
-                                            Button(onClick = {
-                                                if (executingPlugin == null) {
-                                                    executingPlugin = name
-                                                    scope.launch(Dispatchers.IO) {
-                                                        val result = pluginManager.executePlugin(name)
-                                                        withContext(Dispatchers.Main) {
-                                                            executingPlugin = null
-                                                            showExecutionResult(name, result)
-                                                        }
-                                                    }
-                                                }
-                                            }, enabled = !isExecuting) {
-                                                if (isExecuting) { CircularProgressIndicator(Modifier.size(16.dp), strokeWidth = 2.dp) ; Spacer(Modifier.width(4.dp)) }
-                                                Text(if (isExecuting) "执行中" else "执行")
-                                            }
-                                        } else {
-                                            // 长期运行模式
-                                            OutlinedButton(onClick = { showDeleteConfirm = name }, enabled = !isExecuting) {
-                                                Text("卸载")
-                                            }
-                                            Spacer(Modifier.width(8.dp))
-                                            if (isRunning) {
-                                                Button(onClick = { pluginManager.stopBackgroundPlugin(name) }) {
-                                                    Text("停止")
-                                                }
-                                            } else {
-                                                Button(onClick = { pluginManager.startBackgroundPlugin(name) }) {
-                                                    Text("启动")
-                                                }
-                                            }
+                                            Text(if (isExecuting) "执行中" else "执行")
                                         }
+                                    } else {
+                                        Button(
+                                            onClick = {
+                                                if (isRunning) host.stopBackground(name) else host.startBackground(name)
+                                            }
+                                        ) { Text(if (isRunning) "停止" else "启动") }
                                     }
                                 }
                             }
@@ -224,43 +187,36 @@ fun PluginListScreen() {
         }
     }
 
-    // 弹窗：执行结果
-    if (showResultDialog) {
+    result?.let { executed ->
         AlertDialog(
-            onDismissRequest = { showResultDialog = false },
-            title = { Text(resultDialogTitle) },
+            onDismissRequest = { host.consumeResult() },
+            title = { Text("插件执行结果 - ${executed.pluginName}") },
             text = {
                 Column(Modifier.heightIn(max = 400.dp).verticalScroll(rememberScrollState())) {
-                    Text(resultDialogText, style = MaterialTheme.typography.bodyMedium)
+                    Text(
+                        text = if (executed.output.startsWith("Error:")) {
+                            "执行失败\n\n${executed.output}"
+                        } else {
+                            "执行成功\n\n${executed.output}"
+                        },
+                        style = MaterialTheme.typography.bodyMedium
+                    )
                 }
             },
-            confirmButton = { TextButton(onClick = { showResultDialog = false }) { Text("确定") } }
+            confirmButton = { TextButton(onClick = { host.consumeResult() }) { Text("确定") } }
         )
     }
 
-    // 弹窗：添加插件
     if (showAddDialog) {
         AddPluginDialog(
             onDismiss = { showAddDialog = false },
             onPluginAdded = { uri ->
                 showAddDialog = false
-                isLoading = true
-                errorMessage = null
-                scope.launch {
-                    val ok = withContext(Dispatchers.IO) { pluginManager.installPluginFromUri(uri) }
-                    if (ok) {
-                        // installPluginFromUri 内部已重载插件，这里只取最新列表
-                        plugins = withContext(Dispatchers.IO) { pluginManager.getLoadedPlugins() }
-                    } else {
-                        errorMessage = "安装失败"
-                    }
-                    isLoading = false
-                }
+                host.install(uri)
             }
         )
     }
 
-    // 弹窗：删除确认
     showDeleteConfirm?.let { delName ->
         AlertDialog(
             onDismissRequest = { showDeleteConfirm = null },
@@ -269,10 +225,7 @@ fun PluginListScreen() {
             confirmButton = {
                 TextButton(onClick = {
                     showDeleteConfirm = null
-                    scope.launch {
-                        withContext(Dispatchers.IO) { pluginManager.uninstallPlugin(delName) }
-                        plugins = plugins.filter { it.getName() != delName }
-                    }
+                    host.uninstall(delName)
                 }) { Text("确定删除") }
             },
             dismissButton = {
@@ -286,13 +239,12 @@ fun PluginListScreen() {
 @Composable
 fun AddPluginDialog(
     onDismiss: () -> Unit,
-    onPluginAdded: (android.net.Uri) -> Unit
+    onPluginAdded: (Uri) -> Unit
 ) {
     var selectedUri by remember { mutableStateOf<Uri?>(null) }
     var selectedFileName by remember { mutableStateOf<String?>(null) }
     val context = LocalContext.current
 
-    // 文件选择器必须在顶层定义，不能在 lambda 内部
     val filePickerLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.OpenDocument()
     ) { uri: Uri? ->
@@ -312,21 +264,13 @@ fun AddPluginDialog(
         title = { Text("添加插件") },
         text = {
             Column {
-                Text("请选择.jar格式的插件文件：")
+                Text("请选择 .jar 格式的插件文件：")
                 Spacer(modifier = Modifier.height(16.dp))
-
-                // 文件选择按钮
                 Button(
-                    onClick = {
-                        // 启动文件选择器，使用通配符MIME类型确保能找到文件
-                        filePickerLauncher.launch(arrayOf("*/*"))
-                    },
+                    onClick = { filePickerLauncher.launch(arrayOf("*/*")) },
                     modifier = Modifier.fillMaxWidth()
-                ) {
-                    Text("选择文件")
-                }
+                ) { Text("选择文件") }
 
-                // 显示已选择的文件
                 if (selectedUri != null) {
                     Spacer(modifier = Modifier.height(12.dp))
                     Card(
@@ -346,18 +290,12 @@ fun AddPluginDialog(
         },
         confirmButton = {
             TextButton(
-                onClick = {
-                    selectedUri?.let { onPluginAdded(it) }
-                },
+                onClick = { selectedUri?.let(onPluginAdded) },
                 enabled = selectedUri != null
-            ) {
-                Text("添加")
-            }
+            ) { Text("添加") }
         },
         dismissButton = {
-            TextButton(onClick = onDismiss) {
-                Text("取消")
-            }
+            TextButton(onClick = onDismiss) { Text("取消") }
         }
     )
 }

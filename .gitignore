@@ -27,5 +27,3 @@ tools/plugin_dex/
 tools/plugins_out_tmp/
 tools/*.class
 tools/*.dex
-!tools/Plugin.class
-!tools/ShizukuProxy.class

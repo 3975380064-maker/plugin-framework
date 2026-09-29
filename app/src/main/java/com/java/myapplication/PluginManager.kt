@@ -11,15 +11,15 @@ import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 
 /**
- * 插件管理器：对外唯一入口。
- * 编排插件加载、安装卸载、执行、实例池与后台常驻插件。
+ * 插件管理器：编排加载、安装卸载、执行、实例池与后台常驻插件。
+ * 本身不持有 UI 状态；IO 相关方法为挂起函数，由调用方决定调度器。
  */
-class PluginManager(private val context: Context) {
+class PluginManager(context: Context) {
 
-    private val pluginLoader = PluginLoader(context)
-    private val shizukuProxy = ShizukuProxy(context)
+    private val appContext = context.applicationContext
+    private val pluginLoader = PluginLoader(appContext)
+    private val shizukuProxy = ShizukuProxy(appContext)
     private val pool = PluginInstancePool(pluginLoader)
-
     private val scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
 
     private val backgroundHost = BackgroundPluginHost(
@@ -29,19 +29,14 @@ class PluginManager(private val context: Context) {
         dispatcherFactory = { SubPluginDispatcherImpl(pluginLoader, shizukuProxy, pool) }
     )
 
-    private val installer = PluginInstaller(context, pluginLoader)
+    private val installer = PluginInstaller(appContext, pluginLoader)
 
-    var onPluginLoaded: ((Plugin) -> Unit)? = null
-    var onPluginUnloaded: ((String) -> Unit)? = null
     var onError: ((String) -> Unit)? = null
-    var onBackgroundPluginStarted: ((String) -> Unit)? = null
-    var onBackgroundPluginStopped: ((String) -> Unit)? = null
+    var onBackgroundPluginsChanged: ((Set<String>) -> Unit)? = null
 
     init {
-        backgroundHost.onStarted = { onBackgroundPluginStarted?.invoke(it) }
-        backgroundHost.onStopped = { onBackgroundPluginStopped?.invoke(it) }
         backgroundHost.onError = { onError?.invoke(it) }
-
+        backgroundHost.onRunningChanged = { onBackgroundPluginsChanged?.invoke(it) }
         scope.launch {
             while (isActive) {
                 delay(CLEANUP_INTERVAL_MS)
@@ -50,69 +45,67 @@ class PluginManager(private val context: Context) {
         }
     }
 
-    fun initialize() {
-        if (!shizukuProxy.isShizukuAvailable()) {
-            onError?.invoke("Shizuku服务不可用，部分功能可能受限")
-        }
-        loadPlugins()
-    }
-
-    fun loadPlugins(): List<Plugin> {
-        return try {
-            val plugins = pluginLoader.loadAllPlugins()
-            plugins.forEach { onPluginLoaded?.invoke(it) }
-            plugins
-        } catch (e: Exception) {
-            onError?.invoke("加载插件失败: ${e.message}")
+    suspend fun loadPlugins(): List<Plugin> = runCatching { pluginLoader.loadAllPlugins() }
+        .getOrElse {
+            onError?.invoke("加载插件失败: ${it.message}")
             emptyList()
         }
+
+    /**
+     * 全部重新加载。
+     * 会重建 ClassLoader，因此先停掉后台插件并丢弃实例池，避免旧类的孤儿任务。
+     */
+    suspend fun reloadPlugins(): List<Plugin> {
+        backgroundHost.stopAll()
+        pool.discardAll()
+        return runCatching { pluginLoader.reloadPlugins() }
+            .getOrElse {
+                onError?.invoke("加载插件失败: ${it.message}")
+                emptyList()
+            }
     }
 
-    fun executePlugin(pluginName: String, args: Map<String, Any>? = null): String {
+    suspend fun executePlugin(pluginName: String): String {
         val plugin = pluginLoader.getPlugin(pluginName)
-        if (plugin == null) {
-            val errorMsg = "插件 $pluginName 未找到。可能原因：\n" +
-                          "1. 插件文件缺少 META-INF/plugin.properties\n" +
-                          "2. mainClass 声明有误\n" +
-                          "3. 插件未正确实现 Plugin 接口"
-            onError?.invoke(errorMsg)
-            return "Error: Plugin not found\n\n$errorMsg"
-        }
+            ?: return "Error: Plugin not found\n\n" +
+                    "插件 $pluginName 未找到。可能原因：\n" +
+                    "1. 插件文件缺少 META-INF/plugin.properties\n" +
+                    "2. mainClass 声明有误\n" +
+                    "3. 插件未正确实现 Plugin 接口"
 
         return try {
-            plugin.execute(shizukuProxy, args)
-        } catch (e: Exception) {
-            val errorMsg = "执行插件失败: ${e.message}\n堆栈跟踪: ${e.stackTraceToString()}"
-            onError?.invoke(errorMsg)
-            "Error: $errorMsg"
+            plugin.execute(shizukuProxy, null)
+        } catch (e: Throwable) {
+            val msg = "执行插件失败: ${e.message}\n堆栈跟踪: ${e.stackTraceToString()}"
+            onError?.invoke(msg)
+            "Error: $msg"
         }
     }
 
-    fun installPluginFromUri(uri: Uri): Boolean {
+    /** 安装成功返回 null，失败返回错误信息。 */
+    suspend fun installPluginFromUri(uri: Uri): String? {
         val error = installer.install(uri)
-        if (error != null) {
-            onError?.invoke(error)
-            return false
-        }
-        loadPlugins()
-        return true
+        if (error == null) loadPlugins()
+        return error
     }
 
-    fun uninstallPlugin(pluginName: String): Boolean {
-        val error = installer.uninstall(pluginName)
-        if (error != null) {
-            onError?.invoke(error)
-            return false
+    /** 卸载成功返回 null，失败返回错误信息。 */
+    suspend fun uninstallPlugin(pluginName: String): String? {
+        backgroundHost.stop(pluginName)
+        return try {
+            val error = installer.uninstall(pluginName)
+            if (error == null) pool.discard(pluginName)
+            error
+        } catch (e: Throwable) {
+            "卸载插件失败: ${e.message}"
         }
-        onPluginUnloaded?.invoke(pluginName)
-        return true
     }
-
-    fun reloadPlugins(): List<Plugin> = pluginLoader.reloadPlugins()
 
     fun getLoadedPlugins(): List<Plugin> = pluginLoader.getLoadedPlugins()
 
     fun getPluginMeta(name: String): PluginMeta? = pluginLoader.getPluginMeta(name)
+
+    fun isShizukuAvailable(): Boolean = shizukuProxy.isShizukuAvailable()
 
     fun checkShizukuPermission(): Boolean = shizukuProxy.checkPermission()
 
@@ -126,7 +119,8 @@ class PluginManager(private val context: Context) {
 
     fun getRunningBackgroundPlugins(): Set<String> = backgroundHost.runningPlugins()
 
-    fun destroy() {
+    fun shutdown() {
+        backgroundHost.stopAll()
         scope.cancel()
     }
 

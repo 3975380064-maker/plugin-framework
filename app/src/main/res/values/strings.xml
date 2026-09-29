@@ -1,3 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
 <resources>
     <string name="app_name">杂鱼框架</string>
+    <string name="notification_channel">后台插件</string>
+    <string name="notification_running">后台插件运行中</string>
 </resources>
