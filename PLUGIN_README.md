@@ -1,10 +1,10 @@
 # 通用插件框架 - Android 插件系统
 
-## 🎯 框架简介
+## 框架简介
 
 这是一个基于 Shizuku 的 Android 通用插件框架，允许用户通过上传 `.jar` 插件包来扩展应用功能。插件可以使用 Shizuku 获得 ADB 级别的权限，执行高权限操作。
 
-## 📁 项目结构
+## 项目结构
 
 ```
 app/src/main/java/com/java/myapplication/
@@ -17,7 +17,7 @@ app/src/main/java/com/java/myapplication/
     └── PluginListScreen.kt  # 插件管理界面
 ```
 
-## 🔧 核心组件说明
+## 核心组件说明
 
 ### 1. Plugin 接口
 所有插件必须实现此接口：
@@ -26,7 +26,7 @@ public interface Plugin {
     String getName();           // 插件名称
     String getDescription();    // 插件描述
     String getVersion();        // 插件版本
-    String execute(ShizukuProxy proxy, Map<String, Object> args);  // 执行入口
+    String execute(ShizukuProxy proxy, Map<String, ?> args);  // 执行入口
     boolean needsShizuku();    // 是否需要 Shizuku 权限
 }
 ```
@@ -49,7 +49,7 @@ public interface Plugin {
 - 执行插件
 - 刷新插件列表
 
-## 📝 如何编写插件
+## 如何编写插件
 
 ### 步骤 1：创建插件类
 
@@ -83,7 +83,7 @@ public class MyPlugin implements Plugin {
     }
 
     @Override
-    public String execute(ShizukuProxy proxy, Map<String, Object> args) {
+    public String execute(ShizukuProxy proxy, Map<String, ?> args) {
         // 执行你的逻辑
         String result = proxy.execCommand("echo Hello World!");
         return "执行结果: " + result;
@@ -106,7 +106,7 @@ public class MyPlugin implements Plugin {
    jar cf MyPlugin.jar com/plugin/MyPlugin.class META-INF/plugin.properties
    ```
 
-> ⚠️ 插件必须是 `.jar` 且包含 `META-INF/plugin.properties`。框架不再支持 `.dex`，也不再做类名猜测——`mainClass` 必须显式声明。
+> 插件必须是 `.jar` 且包含 `META-INF/plugin.properties`。框架不再支持 `.dex`，也不再做类名猜测——`mainClass` 必须显式声明。
 
 ### 步骤 3：上传插件
 
@@ -117,7 +117,7 @@ public class MyPlugin implements Plugin {
 
 或者在应用内使用"+"按钮选择文件上传。
 
-## 🚀 使用 Shizuku
+## 使用 Shizuku
 
 ### 前置条件
 
@@ -144,13 +144,13 @@ public class MyPlugin implements Plugin {
 <uses-permission android:name="moe.shizuku.manager.permission.API_V23" />
 ```
 
-## 📦 支持的文件格式
+## 支持的文件格式
 
 | 格式 | 说明 | 推荐度 |
 |------|------|--------|
-| `.jar` | Java 归档文件，需含 `META-INF/plugin.properties` | ⭐⭐⭐⭐⭐ |
+| `.jar` | Java 归档文件，需含 `META-INF/plugin.properties` |
 
-## ⚠️ 注意事项
+## 注意事项
 
 1. **安全性**
    - 只加载可信来源的插件
@@ -164,11 +164,11 @@ public class MyPlugin implements Plugin {
    - 插件无法直接访问 Android Framework API
    - 仅能通过 ShizukuProxy 执行 shell 命令
 
-## 🔨 示例插件
+## 示例插件
 
 查看 `tools/ExamplePlugin.java` 文件，这是一个展示设备信息的示例插件。
 
-## 📚 API 参考
+## API 参考
 
 ### ShizukuProxy 方法列表
 
@@ -182,7 +182,7 @@ public class MyPlugin implements Plugin {
 | `putSetting(ns, k, v)` | 设置系统值 | `putSetting("system", "screen_brightness", "128")` |
 | `getSetting(ns, k)` | 获取系统值 | `getSetting("system", "screen_brightness")` |
 
-## 🐛 常见问题
+## 常见问题
 
 ### Q: 提示"Shizuku服务不可用"
 A: 请确保 Shizuku 应用已安装并正在运行。
@@ -193,7 +193,7 @@ A: 检查插件是否为 `.jar`、是否实现了 Plugin 接口、`META-INF/plug
 ### Q: 执行命令返回空
 A: 某些命令需要 root 权限，Shizuku 只提供 ADB 级别权限。
 
-## 📄 License
+## License
 
 MIT License
 
